@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Run or Die</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #050014;
+            touch-action: none;
+        }
+
+        canvas {
+            display: block;
+            background: linear-gradient(180deg, #050014, #0b0033, #14004d);
+        }
+
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #0ff;
+            font-family: Arial;
+            text-shadow: 0 0 8px #0ff;
+            display: none;
+        }
+
+        #joystick {
+            position: absolute;
+            bottom: 40px;
+            left: 40px;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 2px solid #0ff;
+            opacity: .6;
+            display: none;
+        }
+
+        #stick {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #0ff;
+            left: 40px;
+            top: 40px;
+        }
+
+        #overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            color: #f0f;
+            font-family: Arial;
+            font-size: 40px;
+            background: rgba(0, 0, 0, .6);
+            display: none;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 20px;
+            background: #0ff;
+            border: none;
+            cursor: pointer;
+        }
+
+        #menu {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            color: #0ff;
+            font-family: Arial;
+            font-size: 50px;
+            background: rgba(0, 0, 0, .7);
+        }
+
+        #menu button {
+            font-size: 30px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="menu">
+        <div>RUN OR DIE</div>
+        <button onclick="startGame()">START</button>
+    </div>
+
+    <div id="ui">❤️ <span id="hp">3</span> | ⭐ <span id="score">0</span> | 🏆 <span id="best">0</span></div>
+    <div id="joystick">
+        <div id="stick"></div>
+    </div>
+    <div id="overlay">GAME OVER<button onclick="restart()">RESTART</button></div>
+    <canvas id="game"></canvas>
+
+    <script>
+        const c = document.getElementById("game");
+        const ctx = c.getContext("2d");
+        resize();
+        window.onresize = resize;
+        function resize() { c.width = innerWidth; c.height = innerHeight; }
+
+        let best = localStorage.best || 0;
+        document.getElementById("best").textContent = best;
+
+        let player, obstacles, bullets, hearts, shields, keys, score, shake, frame, lastShieldTime, nextShieldInterval, gameStarted = false;
+
+        function init() {
+            player = { x: c.width / 2, y: c.height / 2, size: 30, hp: 3, inv: 120, vx: 0, vy: 0, shield: 0 };
+            obstacles = []; bullets = []; hearts = []; shields = [];
+            keys = {}; score = 0; shake = 0; frame = 0;
+            lastShieldTime = 0;
+            nextShieldInterval = 1800 + Math.floor(Math.random() * 600);
+            document.getElementById("overlay").style.display = "none";
+        }
+
+        addEventListener("keydown", e => keys[e.key] = true);
+        addEventListener("keyup", e => keys[e.key] = false);
+
+        // joystick
+        let joy = document.getElementById("joystick");
+        let stick = document.getElementById("stick");
+        let jx = 0, jy = 0;
+        joy.addEventListener("touchmove", e => {
+            let t = e.touches[0];
+            let r = joy.getBoundingClientRect();
+            jx = (t.clientX - (r.left + 60)) / 40;
+            jy = (t.clientY - (r.top + 60)) / 40;
+            jx = Math.max(-1, Math.min(1, jx));
+            jy = Math.max(-1, Math.min(1, jy));
+            stick.style.left = 40 + jx * 30 + "px";
+            stick.style.top = 40 + jy * 30 + "px";
+        });
+        addEventListener("touchend", () => { jx = jy = 0; stick.style.left = "40px"; stick.style.top = "40px"; });
+
+        function spawnObstacle() {
+            if (obstacles.length >= 12) return;
+            const side = Math.random();
+            let speedFactor = 2.2 + score * 0.0001;
+            let o = { x: 0, y: 0, size: 40, vx: 0, vy: 0, shooter: false, laser: false, cooldown: 0, cdMax: 0 };
+
+            if (frame > 1800 && Math.random() < 0.08) { // nadir lazer
+                o.laser = true; o.size = 35; o.cdMax = 200 + Math.floor(Math.random() * 200); o.cooldown = o.cdMax;
+            } else if (Math.random() < 0.2) { // mermi atan
+                o.shooter = true; o.cdMax = 120 + Math.floor(Math.random() * 80); o.cooldown = o.cdMax;
+            }
+
+            if (side < 0.4) { o.x = Math.random() * (c.width - 40); o.y = -40; o.vy = speedFactor; }
+            else if (side < 0.7) { o.x = -40; o.y = Math.random() * (c.height - 40); o.vx = speedFactor; }
+            else { o.x = c.width + 40; o.y = Math.random() * (c.height - 40); o.vx = -speedFactor; }
+
+            obstacles.push(o);
+        }
+
+        function spawnHeart() { hearts.push({ x: Math.random() * (c.width - 20), y: -20, size: 20, speed: 1 }); }
+        function spawnShield() { shields.push({ x: Math.random() * (c.width - 20), y: -20, size: 25, speed: 1 }); lastShieldTime = frame; nextShieldInterval = 1800 + Math.floor(Math.random() * 600); }
+
+        function hit(amount = 1) { if (player.inv <= 0 && player.shield <= 0) { player.hp -= amount; player.inv = 60; shake = 10; } }
+        function collide(a, b) { return a.x < a.size + b.x && a.x + a.size > b.x && a.y < a.size + b.y && a.y + a.size > b.y; }
+
+        function loop() {
+            if (!gameStarted) return;
+            frame++;
+            ctx.save();
+            if (shake > 0) { ctx.translate(Math.random() * shake - shake / 2, Math.random() * shake - shake / 2); shake--; }
+            ctx.clearRect(0, 0, c.width, c.height);
+
+            // movement
+            player.vx += ((keys.ArrowLeft ? -1 : 0) + (keys.ArrowRight ? 1 : 0) + jx) * 0.5;
+            player.vy += ((keys.ArrowUp ? -1 : 0) + (keys.ArrowDown ? 1 : 0) + jy) * 0.5;
+            player.vx *= 0.9; player.vy *= 0.9;
+            player.x += player.vx; player.y += player.vy;
+            player.x = Math.max(0, Math.min(c.width - player.size, player.x));
+            player.y = Math.max(0, Math.min(c.height - player.size, player.y));
+
+            // player
+            if (player.inv % 10 < 5 || player.shield > 0) {
+                ctx.fillStyle = "#0ff";
+                ctx.shadowColor = "#0ff";
+                ctx.shadowBlur = 20;
+                ctx.fillRect(player.x, player.y, player.size, player.size);
+                if (player.shield > 0) {
+                    ctx.beginPath();
+                    ctx.arc(player.x + player.size / 2, player.y + player.size / 2, player.size, 0, Math.PI * 2);
+                    ctx.strokeStyle = "#00ffff";
+                    ctx.lineWidth = 4;
+                    ctx.shadowBlur = 15;
+                    ctx.stroke();
+                    ctx.shadowBlur = 0;
+                }
+            }
+
+            // spawn tempo
+            let spawnRate = Math.max(15, 35 - score * 0.0001);
+            if (frame % Math.floor(spawnRate) == 0) spawnObstacle();
+            if (frame % 600 == 0) spawnHeart();
+
+            // shields
+            if (frame - lastShieldTime > nextShieldInterval) spawnShield();
+
+            // obstacles
+            obstacles.forEach((o, i) => {
+                o.x += o.vx || 0; o.y += o.vy || 0;
+
+                ctx.fillStyle = o.laser ? "#ff00ff" : o.shooter ? "#ff6600" : "#ff0044";
+                ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 15;
+                ctx.fillRect(o.x, o.y, o.size, o.size);
+                ctx.shadowBlur = 0;
+
+                if (o.laser) {
+                    o.cooldown--;
+                    if (o.cooldown <= 0) {
+                        if (collide(player, o)) hit(3);
+                        o.cooldown = o.cdMax;
+                    }
+                } else if (o.shooter) {
+                    o.cooldown--;
+                    if (o.cooldown <= 0) {
+                        let dx = player.x - o.x, dy = player.y - o.y, len = Math.hypot(dx, dy);
+                        bullets.push({ x: o.x + o.size / 2, y: o.y + o.size / 2, vx: dx / len * 5, vy: dy / len * 5, r: 6, damage: 1 });
+                        o.cooldown = o.cdMax;
+                    }
+                } else {
+                    if (collide(player, o)) hit(1);
+                }
+            });
+            obstacles = obstacles.filter(o => o.x > -100 && o.x < c.width + 100 && o.y < c.height + 100);
+
+            // bullets
+            bullets.forEach((b, j) => {
+                b.x += b.vx; b.y += b.vy;
+                ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fillStyle = "#ff3300"; ctx.fill();
+                if (b.x > player.x && b.x < player.x + player.size && b.y > player.y && b.y < player.y + player.size) {
+                    hit(b.damage);
+                    bullets.splice(j, 1);
+                }
+            });
+            bullets = bullets.filter(b => b.x > -50 && b.x < c.width + 50 && b.y > -50 && b.y < c.height + 50);
+
+            // hearts
+            hearts.forEach(h => { h.y += h.speed; ctx.beginPath(); ctx.arc(h.x, h.y, h.size / 2, 0, Math.PI * 2); ctx.fillStyle = "#00ff99"; ctx.fill(); if (collide(player, h)) { player.hp = Math.min(player.hp + 1, 5); h.y = c.height + 100; } });
+            hearts = hearts.filter(h => h.y < c.height + 50);
+
+            // shields
+            shields.forEach(s => {
+                s.y += s.speed;
+                ctx.beginPath();
+                ctx.arc(s.x + s.size / 2, s.y + s.size / 2, s.size / 2, 0, Math.PI * 2);
+                ctx.strokeStyle = "#00ffff";
+                ctx.lineWidth = 3;
+                ctx.shadowBlur = 10;
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+                if (collide(player, s)) { player.shield = 450; s.y = c.height + 100; }
+            });
+            shields = shields.filter(s => s.y < c.height + 50);
+
+            if (player.inv > 0) player.inv--;
+            if (player.shield > 0) player.shield--;
+
+            ctx.restore();
+
+            // skor yavaş artacak
+            if (frame % 3 === 0) score++;
+
+            document.getElementById("hp").textContent = player.hp;
+            document.getElementById("score").textContent = score;
+
+            if (player.hp > 0) requestAnimationFrame(loop);
+            else {
+                best = Math.max(best, score);
+                localStorage.best = best;
+                document.getElementById("best").textContent = best;
+                document.getElementById("overlay").style.display = "flex";
+            }
+        }
+
+        function startGame() {
+            document.getElementById("menu").style.display = "none";
+            document.getElementById("ui").style.display = "block";
+            document.getElementById("joystick").style.display = "block";
+            gameStarted = true;
+            init();
+            loop();
+        }
+
+        function restart() { init(); loop(); }
+    </script>
+</body>
+
+</html>
